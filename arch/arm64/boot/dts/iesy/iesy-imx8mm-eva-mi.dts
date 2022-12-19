@@ -32,12 +32,20 @@
 	leds {
 		compatible = "gpio-leds";
 		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_gpio_led>;
+        pinctrl-0 = <&pinctrl_leds_bb138>;
 
-		status {
-			label = "status";
-			gpios = <&gpio3 16 GPIO_ACTIVE_HIGH>;
-			default-state = "on";
+		/* green user led (LD4) on BB138 */
+		led@0 {
+			label = "USER_LED_00";
+			gpios = <&gpio4 10 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "heartbeat";
+		};
+
+		/* yellow user led (LD9)) on BB138 */
+		led@1 {
+			label = "USER_LED_01";
+			gpios = <&gpio4 11 GPIO_ACTIVE_LOW>;
+			default-state = "off";
 		};
 	};
 
@@ -563,9 +571,10 @@
 		>;
 	};
 
-	pinctrl_gpio_led: gpioledgrp {
+	pinctrl_leds_bb138: gpioledgrp {
 		fsl,pins = <
-			MX8MM_IOMUXC_NAND_READY_B_GPIO3_IO16	0x19
+			MX8MM_IOMUXC_SAI1_TXFS_GPIO4_IO10	0x19
+			MX8MM_IOMUXC_SAI1_TXC_GPIO4_IO11	0x19
 		>;
 	};
 
