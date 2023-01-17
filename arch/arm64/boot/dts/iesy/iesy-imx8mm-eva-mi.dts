@@ -78,6 +78,26 @@
 		enable-active-high;
 	};
 
+	reg_usb_a_vbus: regulator@1 {
+		compatible = "regulator-fixed";
+		regulator-name = "USB_A_VBUS";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&gpio1 12 GPIO_ACTIVE_HIGH>;
+		off-on-delay = <20000>;
+		enable-active-high;
+    };
+
+	reg_usb_b_vbus: regulator@2 {
+		compatible = "regulator-fixed";
+		regulator-name = "USB_B_VBUS";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpio = <&gpio1 14 GPIO_ACTIVE_HIGH>;
+		off-on-delay = <20000>;
+		enable-active-high;
+    };
+
 	wm8524: audio-codec {
 		#sound-dai-cells = <0>;
 		compatible = "wlf,wm8524";
@@ -221,22 +241,33 @@
 	uart-has-rtscts;
 };
 
-// &usbotg1 {
-// 	dr_mode = "otg";
-// 	hnp-disable;
-// 	srp-disable;
-// 	adp-disable;
-// 	usb-role-switch;
-// 	picophy,pre-emp-curr-control = <3>;
-// 	picophy,dc-vol-level-adjust = <7>;
-// 	status = "okay";
+&usbotg1 {
+	vbus-supply = <&reg_usb_a_vbus>;
+	over-current-active-low;
+	dr_mode = "host";
+	pinctrl-names = "idle", "active";
+	pinctrl-0 = <&pinctrl_usb1_idle>;
+	pinctrl-1 = <&pinctrl_usb1_active>;
+	status = "okay";
+};
 
-// 	port {
-// 		usb1_drd_sw: endpoint {
-// 			remote-endpoint = <&typec1_dr_sw>;
-// 		};
-// 	};
-// };
+&usbotg2 {
+	vbus-supply = <&reg_usb_b_vbus>;
+	over-current-active-low;
+	dr_mode = "host";
+	pinctrl-names = "idle", "active";
+	pinctrl-0 = <&pinctrl_usb2_idle>;
+	pinctrl-1 = <&pinctrl_usb2_active>;
+	status = "okay";
+};
+
+&usbphynop1 {
+	vcc-supply = <&reg_usb_a_vbus>;
+};
+
+&usbphynop2 {
+	vcc-supply = <&reg_usb_b_vbus>;
+};
 
 &usdhc1 { /* SDIO A */
 	pinctrl-names = "default", "state_100mhz", "state_200mhz";
@@ -597,6 +628,37 @@
 			MX8MM_IOMUXC_ECSPI2_SS0_UART4_DCE_RTS_B		0x140
 		>;
 	};
+
+	pinctrl_usb1_idle: usb1idl {
+		fsl,pins = <
+			MX8MM_IOMUXC_GPIO1_IO10_USB1_OTG_ID 0x140
+			MX8MM_IOMUXC_GPIO1_IO12_GPIO1_IO12	0x0
+			MX8MM_IOMUXC_GPIO1_IO13_GPIO1_IO13	0x140
+		>;
+	};
+
+	pinctrl_usb1_active: usb1act {
+		fsl,pins = <
+			MX8MM_IOMUXC_GPIO1_IO10_USB1_OTG_ID 0x140
+			MX8MM_IOMUXC_GPIO1_IO12_GPIO1_IO12	0x0		/* PWR_EN */
+			MX8MM_IOMUXC_GPIO1_IO13_USB1_OTG_OC	0x140
+		>;
+	};
+
+	pinctrl_usb2_idle: usb2idl {
+		fsl,pins = <
+			MX8MM_IOMUXC_GPIO1_IO15_GPIO1_IO15	0x140
+			MX8MM_IOMUXC_GPIO1_IO14_GPIO1_IO14	0x0
+		>;
+	};
+
+	pinctrl_usb2_active: usb2act {
+		fsl,pins = <
+			MX8MM_IOMUXC_GPIO1_IO15_USB2_OTG_OC	0x140
+			MX8MM_IOMUXC_GPIO1_IO14_GPIO1_IO14	0x0		/* PWR_EN */
+		>;
+	};
+
 
 	pinctrl_usdhc1_gpio: usdhc1grpgpio {
 		fsl,pins = <
