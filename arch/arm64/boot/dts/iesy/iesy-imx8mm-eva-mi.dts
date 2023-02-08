@@ -49,6 +49,25 @@
 		};
 	};
 
+	user-buttons {
+		compatible = "gpio-keys";
+		// autorepeat;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_buttons>;
+
+		user-button-1 {
+			label = "User Button 1";
+			gpios = <&gpio1 8 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_X>;
+		};
+
+		user-button-2 {
+			label = "User Button 2";
+			gpios = <&gpio1 9 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_Y>;
+		};
+	};
+
 	// pcie0_refclk: pcie0-refclk {
 	// 	compatible = "fixed-clock";
 	// 	#clock-cells = <0>;
@@ -244,7 +263,7 @@
 &usbotg1 {
 	vbus-supply = <&reg_usb_a_vbus>;
 	over-current-active-low;
-	dr_mode = "host";
+	dr_mode = "otg";
 	pinctrl-names = "idle", "active";
 	pinctrl-0 = <&pinctrl_usb1_idle>;
 	pinctrl-1 = <&pinctrl_usb1_active>;
@@ -422,9 +441,15 @@
 	};
 
 	eeprom@50 {
-		compatible = "onsemi,24c32";
+		compatible = "onsemi,24c32", "at,24c32";
 		reg = <0x50>;
 		pagesize = <32>;
+	};
+
+	eeprom@51 {
+		compatible = "at,24c64";
+		reg = <0x51>;
+		pagesize = <64>;
 	};
 };
 
@@ -438,6 +463,24 @@
 		compatible = "ti,tlv320aic3253", "ti,tlv320aic3x";
 		reg = <0x18>;
 	};
+};
+
+&pwm1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_pwm1>;
+};
+
+&pwm2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_pwm2>;
+};
+
+&pwm3 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_pwm3>;
 };
 
 &iomuxc {
@@ -491,6 +534,13 @@
 		fsl,pins = <
 			MX8MM_IOMUXC_SAI1_TXFS_GPIO4_IO10	0x19
 			MX8MM_IOMUXC_SAI1_TXC_GPIO4_IO11	0x19
+		>;
+	};
+
+	pinctrl_buttons: gpiobuttongrp {
+		fsl,pins = <
+			MX8MM_IOMUXC_GPIO1_IO08_GPIO1_IO8	0x156
+			MX8MM_IOMUXC_GPIO1_IO09_GPIO1_IO9	0x156
 		>;
 	};
 
@@ -792,6 +842,24 @@
 	pinctrl_wdog: wdoggrp {
 		fsl,pins = <
 			MX8MM_IOMUXC_GPIO1_IO02_WDOG1_WDOG_B	0xc6
+		>;
+	};
+
+	pinctrl_pwm1: pwm1grp {
+		fsl,pins = <
+			MX8MM_IOMUXC_SPDIF_EXT_CLK_PWM1_OUT		0x116
+		>;
+	};
+
+	pinctrl_pwm2: pwm2grp {
+		fsl,pins = <
+			MX8MM_IOMUXC_SPDIF_RX_PWM2_OUT			0x116
+		>;
+	};
+
+	pinctrl_pwm3: pwm3grp {
+		fsl,pins = <
+			MX8MM_IOMUXC_SPDIF_TX_PWM3_OUT			0x116
 		>;
 	};
 };
