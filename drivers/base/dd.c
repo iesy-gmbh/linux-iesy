@@ -102,14 +102,6 @@ static void deferred_probe_work_func(struct work_struct *work)
 		 */
 		mutex_unlock(&deferred_probe_mutex);
 
-		/*
-		 * Force the device to the end of the dpm_list since
-		 * the PM code assumes that the order we add things to
-		 * the list is a good order for suspend but deferred
-		 * probe makes that very unsafe.
-		 */
-		device_pm_move_to_tail(dev);
-
 		dev_dbg(dev, "Retrying from deferred list\n");
 		bus_probe_device(dev);
 		mutex_lock(&deferred_probe_mutex);
@@ -381,6 +373,14 @@ static void driver_bound(struct device *dev)
 	device_pm_check_callbacks(dev);
 
 	/*
+	 * Force the device to the end of the dpm_list since
+	 * the PM code assumes that the order we add things to
+	 * the list is a good order for suspend but deferred
+	 * probe makes that very unsafe.
+	 */
+	device_pm_move_to_tail(dev);
+
+	/*
 	 * Make sure the device is no longer in one of the deferred lists and
 	 * kick off retrying all pending devices
 	 */
@@ -516,7 +516,10 @@ static int really_probe(struct device *dev, struct device_driver *drv)
 	atomic_inc(&probe_count);
 	pr_debug("bus: '%s': %s: probing driver %s with device %s\n",
 		 drv->bus->name, __func__, drv->name, dev_name(dev));
-	WARN_ON(!list_empty(&dev->devres_head));
+	if (!list_empty(&dev->devres_head)) {
+		dev_crit(dev, "Resources present before probing\n");
+		return -EBUSY;
+	}
 
 re_probe:
 	dev->driver = drv;

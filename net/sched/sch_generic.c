@@ -440,6 +440,13 @@ static void dev_watchdog(struct timer_list *t)
 					txq->trans_timeout++;
 					break;
 				}
+
+				/* Devices with HW_ACCEL_MQ have multiple txqs
+				 * but update only the first one's transmission
+				 * timestamp so avoid checking the rest.
+				 */
+				if (dev->features & NETIF_F_HW_ACCEL_MQ)
+					break;
 			}
 
 			if (some_queue_timedout) {
@@ -657,7 +664,7 @@ static struct sk_buff *pfifo_fast_dequeue(struct Qdisc *qdisc)
 	if (likely(skb)) {
 		qdisc_update_stats_at_dequeue(qdisc, skb);
 	} else {
-		qdisc->empty = true;
+		WRITE_ONCE(qdisc->empty, true);
 	}
 
 	return skb;

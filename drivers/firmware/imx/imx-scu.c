@@ -7,8 +7,8 @@
  *
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/err.h>
-#include <linux/firmware/imx/types.h>
 #include <linux/firmware/imx/ipc.h>
 #include <linux/firmware/imx/sci.h>
 #include <linux/interrupt.h>
@@ -20,8 +20,11 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
+#include <xen/xen.h>
+
+#define FSL_HVC_SC                      0xC6000000
 #define SCU_MU_CHAN_NUM		8
-#define MAX_RX_TIMEOUT		(msecs_to_jiffies(30))
+#define MAX_RX_TIMEOUT		(msecs_to_jiffies(3000))
 
 struct imx_sc_chan {
 	struct imx_sc_ipc *sc_ipc;
@@ -29,6 +32,8 @@ struct imx_sc_chan {
 	struct mbox_client cl;
 	struct mbox_chan *ch;
 	int idx;
+	struct completion tx_done;
+	u8 rx_pos;
 };
 
 struct imx_sc_ipc {
@@ -100,6 +105,14 @@ int imx_scu_get_handle(struct imx_sc_ipc **ipc)
 }
 EXPORT_SYMBOL(imx_scu_get_handle);
 
+/* Callback called when the word of a message is ack-ed, eg read by SCU */
+static void imx_scu_tx_done(struct mbox_client *cl, void *mssg, int r)
+{
+	struct imx_sc_chan *sc_chan = container_of(cl, struct imx_sc_chan, cl);
+
+	complete(&sc_chan->tx_done);
+}
+
 static void imx_scu_rx_callback(struct mbox_client *c, void *msg)
 {
 	struct imx_sc_chan *sc_chan = container_of(c, struct imx_sc_chan, cl);
@@ -107,42 +120,76 @@ static void imx_scu_rx_callback(struct mbox_client *c, void *msg)
 	struct imx_sc_rpc_msg *hdr;
 	u32 *data = msg;
 
-	if (sc_chan->idx == 0) {
+	if (sc_chan->rx_pos == 0) {
 		hdr = msg;
 		sc_ipc->rx_size = hdr->size;
 		dev_dbg(sc_ipc->dev, "msg rx size %u\n", sc_ipc->rx_size);
-		if (sc_ipc->rx_size > 4)
-			dev_warn(sc_ipc->dev, "RPC does not support receiving over 4 words: %u\n",
-				 sc_ipc->rx_size);
 	}
 
-	sc_ipc->msg[sc_chan->idx] = *data;
+	sc_ipc->msg[sc_chan->rx_pos] = *data;
+	sc_chan->rx_pos += 4;
 	sc_ipc->count++;
 
 	dev_dbg(sc_ipc->dev, "mu %u msg %u 0x%x\n", sc_chan->idx,
 		sc_ipc->count, *data);
 
-	if ((sc_ipc->rx_size != 0) && (sc_ipc->count == sc_ipc->rx_size))
+	if (sc_ipc->count == sc_ipc->rx_size)
+		complete(&sc_ipc->done);
+}
+
+static void imx_scu_big_rx_callback(struct mbox_client *c, void *msg)
+{
+	struct imx_sc_chan *sc_chan = container_of(c, struct imx_sc_chan, cl);
+	struct imx_sc_ipc *sc_ipc = sc_chan->sc_ipc;
+	struct imx_sc_rpc_msg *hdr;
+	u32 *data = msg;
+
+	if (sc_ipc->count == 0) {
+		hdr = msg;
+		sc_ipc->rx_size = hdr->size;
+		dev_dbg(sc_ipc->dev, "msg rx size %u\n", sc_ipc->rx_size);
+	}
+
+	sc_ipc->msg[sc_ipc->count] = *data;
+	sc_ipc->count++;
+
+	dev_dbg(sc_ipc->dev, "mu %u msg %u 0x%x\n", sc_chan->idx,
+		sc_ipc->count, *data);
+
+	if (sc_ipc->count == sc_ipc->rx_size)
 		complete(&sc_ipc->done);
 }
 
 static int imx_scu_ipc_write(struct imx_sc_ipc *sc_ipc, void *msg)
 {
-	struct imx_sc_rpc_msg *hdr = msg;
+	struct imx_sc_rpc_msg hdr = *(struct imx_sc_rpc_msg *)msg;
 	struct imx_sc_chan *sc_chan;
 	u32 *data = msg;
 	int ret;
 	int i;
 
 	/* Check size */
-	if (hdr->size > IMX_SC_RPC_MAX_MSG)
+	if (hdr.size > IMX_SC_RPC_MAX_MSG)
 		return -EINVAL;
 
-	dev_dbg(sc_ipc->dev, "RPC SVC %u FUNC %u SIZE %u\n", hdr->svc,
-		hdr->func, hdr->size);
+	dev_dbg(sc_ipc->dev, "RPC SVC %u FUNC %u SIZE %u\n", hdr.svc,
+		hdr.func, hdr.size);
 
-	for (i = 0; i < hdr->size; i++) {
+	for (i = 0; i < hdr.size; i++) {
 		sc_chan = &sc_ipc->chans[i % 4];
+
+		/*
+		 * SCU requires that all messages words are written
+		 * sequentially but linux MU driver implements multiple
+		 * independent channels for each register so ordering between
+		 * different channels must be ensured by SCU API interface.
+		 *
+		 * Wait for tx_done before every send to ensure that no
+		 * queueing happens at the mailbox channel level.
+		 */
+		wait_for_completion(&sc_chan->tx_done);
+		reinit_completion(&sc_chan->tx_done);
+
 		ret = mbox_send_message(sc_chan->ch, &data[i]);
 		if (ret < 0)
 			return ret;
@@ -157,33 +204,54 @@ static int imx_scu_ipc_write(struct imx_sc_ipc *sc_ipc, void *msg)
 int imx_scu_call_rpc(struct imx_sc_ipc *sc_ipc, void *msg, bool have_resp)
 {
 	struct imx_sc_rpc_msg *hdr;
+	struct arm_smccc_res res;
 	int ret;
+	int i;
 
 	if (WARN_ON(!sc_ipc || !msg))
 		return -EINVAL;
 
 	mutex_lock(&sc_ipc->lock);
+
+	for (i = 4; i < 8; i++) {
+		struct imx_sc_chan *sc_chan = &sc_ipc->chans[i];
+
+		sc_chan->rx_pos = sc_chan->idx;
+	}
+
 	reinit_completion(&sc_ipc->done);
 
 	sc_ipc->msg = msg;
 	sc_ipc->count = 0;
-	ret = imx_scu_ipc_write(sc_ipc, msg);
-	if (ret < 0) {
-		dev_err(sc_ipc->dev, "RPC send msg failed: %d\n", ret);
-		goto out;
-	}
+	sc_ipc->rx_size = 0;
 
-	if (have_resp) {
-		if (!wait_for_completion_timeout(&sc_ipc->done,
-						 MAX_RX_TIMEOUT)) {
-			dev_err(sc_ipc->dev, "RPC send msg timeout\n");
-			mutex_unlock(&sc_ipc->lock);
-			return -ETIMEDOUT;
+	if (xen_initial_domain()) {
+		arm_smccc_hvc(FSL_HVC_SC, (uint64_t)msg, !have_resp, 0, 0, 0,
+			      0, 0, &res);
+		if (res.a0)
+			printk("Error FSL_HVC_SC %ld\n", res.a0);
+
+		ret = res.a0;
+
+	} else {
+		ret = imx_scu_ipc_write(sc_ipc, msg);
+		if (ret < 0) {
+			dev_err(sc_ipc->dev, "RPC send msg failed: %d\n", ret);
+			goto out;
 		}
 
-		/* response status is stored in hdr->func field */
-		hdr = msg;
-		ret = hdr->func;
+		if (have_resp) {
+			if (!wait_for_completion_timeout(&sc_ipc->done,
+							 MAX_RX_TIMEOUT)) {
+				dev_err(sc_ipc->dev, "RPC send msg timeout\n");
+				mutex_unlock(&sc_ipc->lock);
+				return -ETIMEDOUT;
+			}
+
+			/* response status is stored in hdr->func field */
+			hdr = msg;
+			ret = hdr->func;
+		}
 	}
 
 out:
@@ -194,6 +262,71 @@ out:
 	return imx_sc_to_linux_errno(ret);
 }
 EXPORT_SYMBOL(imx_scu_call_rpc);
+
+int imx_scu_call_big_rpc(struct imx_sc_ipc *sc_ipc, void *msg, bool have_resp)
+{
+	struct imx_sc_rpc_msg *hdr;
+	struct arm_smccc_res res;
+	int ret;
+	int i;
+
+	if (WARN_ON(!sc_ipc || !msg))
+		return -EINVAL;
+
+	mutex_lock(&sc_ipc->lock);
+	for (i = 4; i < 8; i++) {
+		struct mbox_client *cl = &sc_ipc->chans[i].cl;
+
+		cl->rx_callback = imx_scu_big_rx_callback;
+	}
+
+	reinit_completion(&sc_ipc->done);
+
+	sc_ipc->msg = msg;
+	sc_ipc->count = 0;
+	sc_ipc->rx_size = 0;
+	if (xen_initial_domain()) {
+		arm_smccc_hvc(FSL_HVC_SC, (uint64_t)msg, !have_resp, 0, 0, 0,
+			      0, 0, &res);
+		if (res.a0)
+			printk("Error FSL_HVC_SC %ld\n", res.a0);
+
+		ret = res.a0;
+
+	} else {
+		ret = imx_scu_ipc_write(sc_ipc, msg);
+		if (ret < 0) {
+			dev_err(sc_ipc->dev, "RPC send msg failed: %d\n", ret);
+			goto out;
+		}
+
+		if (have_resp) {
+			if (!wait_for_completion_timeout(&sc_ipc->done,
+							 MAX_RX_TIMEOUT)) {
+				dev_err(sc_ipc->dev, "RPC send msg timeout\n");
+				mutex_unlock(&sc_ipc->lock);
+				return -ETIMEDOUT;
+			}
+
+			/* response status is stored in hdr->func field */
+			hdr = msg;
+			ret = hdr->func;
+		}
+	}
+
+out:
+	for (i = 4; i < 8; i++) {
+		struct mbox_client *cl = &sc_ipc->chans[i].cl;
+
+		cl->rx_callback = imx_scu_rx_callback;
+	}
+	mutex_unlock(&sc_ipc->lock);
+
+	dev_dbg(sc_ipc->dev, "RPC SVC done\n");
+
+	return imx_sc_to_linux_errno(ret);
+}
+EXPORT_SYMBOL(imx_scu_call_big_rpc);
 
 static int imx_scu_probe(struct platform_device *pdev)
 {
@@ -224,6 +357,11 @@ static int imx_scu_probe(struct platform_device *pdev)
 		cl->tx_block = false;
 		cl->knows_txdone = true;
 		cl->rx_callback = imx_scu_rx_callback;
+
+		/* Initial tx_done completion as "done" */
+		cl->tx_done = imx_scu_tx_done;
+		init_completion(&sc_chan->tx_done);
+		complete(&sc_chan->tx_done);
 
 		sc_chan->sc_ipc = sc_ipc;
 		sc_chan->idx = i % 4;
@@ -269,7 +407,12 @@ static struct platform_driver imx_scu_driver = {
 	},
 	.probe = imx_scu_probe,
 };
-builtin_platform_driver(imx_scu_driver);
+
+static int __init imx_scu_driver_init(void)
+{
+	return platform_driver_register(&imx_scu_driver);
+}
+subsys_initcall_sync(imx_scu_driver_init);
 
 MODULE_AUTHOR("Dong Aisheng <aisheng.dong@nxp.com>");
 MODULE_DESCRIPTION("IMX SCU firmware protocol driver");

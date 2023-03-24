@@ -322,7 +322,8 @@ static int print_events_table_entry(void *data, char *name, char *event,
 				    char *desc, char *long_desc,
 				    char *pmu, char *unit, char *perpkg,
 				    char *metric_expr,
-				    char *metric_name, char *metric_group)
+				    char *metric_name, char *metric_group,
+				    char *socname)
 {
 	struct perf_entry_data *pd = data;
 	FILE *outfp = pd->outfp;
@@ -354,6 +355,8 @@ static int print_events_table_entry(void *data, char *name, char *event,
 		fprintf(outfp, "\t.metric_name = \"%s\",\n", metric_name);
 	if (metric_group)
 		fprintf(outfp, "\t.metric_group = \"%s\",\n", metric_group);
+	if (socname)
+		fprintf(outfp, "\t.socname = \"%s\",\n", socname);
 	fprintf(outfp, "},\n");
 
 	return 0;
@@ -371,6 +374,7 @@ struct event_struct {
 	char *metric_expr;
 	char *metric_name;
 	char *metric_group;
+	char *socname;
 };
 
 #define ADD_EVENT_FIELD(field) do { if (field) {		\
@@ -416,7 +420,8 @@ static void free_arch_std_events(void)
 static int save_arch_std_events(void *data, char *name, char *event,
 				char *desc, char *long_desc, char *pmu,
 				char *unit, char *perpkg, char *metric_expr,
-				char *metric_name, char *metric_group)
+				char *metric_name, char *metric_group,
+				char *socname)
 {
 	struct event_struct *es;
 
@@ -507,7 +512,8 @@ int json_events(const char *fn,
 		      char *long_desc,
 		      char *pmu, char *unit, char *perpkg,
 		      char *metric_expr,
-		      char *metric_name, char *metric_group),
+		      char *metric_name, char *metric_group,
+		      char *socname),
 	  void *data)
 {
 	int err;
@@ -536,6 +542,7 @@ int json_events(const char *fn,
 		char *metric_expr = NULL;
 		char *metric_name = NULL;
 		char *metric_group = NULL;
+		char *socname = NULL;
 		char *arch_std = NULL;
 		unsigned long long eventcode = 0;
 		struct msrmap *msr = NULL;
@@ -622,6 +629,8 @@ int json_events(const char *fn,
 				addfield(map, &metric_expr, "", "", val);
 				for (s = metric_expr; *s; s++)
 					*s = tolower(*s);
+			} else if (json_streq(map, field, "SocName")) {
+				addfield(map, &socname, "", "", val);
 			} else if (json_streq(map, field, "ArchStdEvent")) {
 				addfield(map, &arch_std, "", "", val);
 				for (s = arch_std; *s; s++)
@@ -663,7 +672,8 @@ int json_events(const char *fn,
 				goto free_strings;
 		}
 		err = func(data, name, real_event(name, event), desc, long_desc,
-			   pmu, unit, perpkg, metric_expr, metric_name, metric_group);
+			   pmu, unit, perpkg, metric_expr, metric_name, metric_group,
+			   socname);
 free_strings:
 		free(event);
 		free(desc);
@@ -677,6 +687,7 @@ free_strings:
 		free(metric_expr);
 		free(metric_name);
 		free(metric_group);
+		free(socname);
 		free(arch_std);
 
 		if (err)
@@ -758,6 +769,7 @@ static int process_mapfile(FILE *outfp, char *fpath)
 	char *line, *p;
 	int line_num;
 	char *tblname;
+	int ret = 0;
 
 	pr_info("%s: Processing mapfile %s\n", prog, fpath);
 
@@ -769,6 +781,7 @@ static int process_mapfile(FILE *outfp, char *fpath)
 	if (!mapfp) {
 		pr_info("%s: Error %s opening %s\n", prog, strerror(errno),
 				fpath);
+		free(line);
 		return -1;
 	}
 
@@ -795,7 +808,8 @@ static int process_mapfile(FILE *outfp, char *fpath)
 			/* TODO Deal with lines longer than 16K */
 			pr_info("%s: Mapfile %s: line %d too long, aborting\n",
 					prog, fpath, line_num);
-			return -1;
+			ret = -1;
+			goto out;
 		}
 		line[strlen(line)-1] = '\0';
 
@@ -825,7 +839,9 @@ static int process_mapfile(FILE *outfp, char *fpath)
 
 out:
 	print_mapping_table_suffix(outfp);
-	return 0;
+	fclose(mapfp);
+	free(line);
+	return ret;
 }
 
 /*
@@ -1122,6 +1138,7 @@ int main(int argc, char *argv[])
 		goto empty_map;
 	} else if (rc < 0) {
 		/* Make build fail */
+		fclose(eventsfp);
 		free_arch_std_events();
 		return 1;
 	} else if (rc) {
@@ -1134,6 +1151,7 @@ int main(int argc, char *argv[])
 		goto empty_map;
 	} else if (rc < 0) {
 		/* Make build fail */
+		fclose(eventsfp);
 		free_arch_std_events();
 		return 1;
 	} else if (rc) {
@@ -1151,6 +1169,8 @@ int main(int argc, char *argv[])
 	if (process_mapfile(eventsfp, mapfile)) {
 		pr_info("%s: Error processing mapfile %s\n", prog, mapfile);
 		/* Make build fail */
+		fclose(eventsfp);
+		free_arch_std_events();
 		return 1;
 	}
 

@@ -244,7 +244,12 @@ int eth_header_cache(const struct neighbour *neigh, struct hh_cache *hh, __be16 
 	eth->h_proto = type;
 	memcpy(eth->h_source, dev->dev_addr, ETH_ALEN);
 	memcpy(eth->h_dest, neigh->ha, ETH_ALEN);
-	hh->hh_len = ETH_HLEN;
+
+	/* Pairs with READ_ONCE() in neigh_resolve_output(),
+	 * neigh_hh_output() and neigh_update_hhs().
+	 */
+	smp_store_release(&hh->hh_len, ETH_HLEN);
+
 	return 0;
 }
 EXPORT_SYMBOL(eth_header_cache);
@@ -573,8 +578,10 @@ EXPORT_SYMBOL(eth_platform_get_mac_address);
 int nvmem_get_mac_address(struct device *dev, void *addrbuf)
 {
 	struct nvmem_cell *cell;
-	const void *mac;
+	const unsigned char *mac;
+	unsigned char macaddr[ETH_ALEN];
 	size_t len;
+	int i = 0;
 
 	cell = nvmem_cell_get(dev, "mac-address");
 	if (IS_ERR(cell))
@@ -586,14 +593,27 @@ int nvmem_get_mac_address(struct device *dev, void *addrbuf)
 	if (IS_ERR(mac))
 		return PTR_ERR(mac);
 
-	if (len != ETH_ALEN || !is_valid_ether_addr(mac)) {
-		kfree(mac);
-		return -EINVAL;
+	if (len != ETH_ALEN)
+		goto invalid_addr;
+
+	if (dev->of_node &&
+	    of_property_read_bool(dev->of_node, "nvmem_macaddr_swap")) {
+		for (i = 0; i < ETH_ALEN; i++)
+			macaddr[i] = mac[ETH_ALEN - i - 1];
+	} else {
+		ether_addr_copy(macaddr, mac);
 	}
 
-	ether_addr_copy(addrbuf, mac);
+	if (!is_valid_ether_addr(macaddr))
+		goto invalid_addr;
+
+	ether_addr_copy(addrbuf, macaddr);
 	kfree(mac);
 
 	return 0;
+
+invalid_addr:
+	kfree(mac);
+	return -EINVAL;
 }
 EXPORT_SYMBOL(nvmem_get_mac_address);
